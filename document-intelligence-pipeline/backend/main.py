@@ -1,5 +1,9 @@
 import os
 import shutil
+import uuid
+import traceback
+import threading
+from contextlib import asynccontextmanager
 from fastapi import FastAPI, UploadFile, File, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
@@ -9,11 +13,74 @@ from llama_parse import LlamaParse
 from flashrank import Ranker, RerankRequest
 from google import genai
 
+from qdrant_client import QdrantClient
+from qdrant_client.models import Distance, VectorParams, PointStruct, Filter, FieldCondition, MatchValue
+from sentence_transformers import SentenceTransformer
+
 load_dotenv()
 
-app = FastAPI(title="Document Intelligence Pipeline")
+# Setup global structural variables
+client = None
+qdrant_client = None
+embedding_model = None
+ranker = None
+COLLECTION_NAME = "multidoc_chunks"
 
-# Enable CORS so your Next.js frontend can talk to this backend
+# Core atomic flag tracking thread compilation loops
+models_loaded = False
+
+def bootstrap_models():
+    """Warms up and caches embedding and reranker structures on a isolated background thread."""
+    global embedding_model, ranker, models_loaded
+    try:
+        print("⏳ [Background Worker] Compiling local SentenceTransformer ('all-MiniLM-L6-v2')...")
+        embedding_model = SentenceTransformer("all-MiniLM-L6-v2")
+        
+        print("⏳ [Background Worker] Caching local FlashRank Cross-Encoder ('ms-marco-MiniLM-L-12-v2')...")
+        ranker = Ranker(model_name="ms-marco-MiniLM-L-12-v2")
+        
+        models_loaded = True
+        print("🚀 [Background Worker] Matrix compilation complete. Local neural models active.")
+    except Exception as e:
+        print(f"❌ [Background Worker] Critical compilation error: {str(e)}")
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Manages application lifecycle context smoothly across runtime reloads."""
+    global client, qdrant_client
+    try:
+        api_key = os.getenv("GEMINI_API_KEY")
+        if not api_key:
+            print("⚠️ WARNING: GEMINI_API_KEY is missing from your environment configurations.")
+        
+        # Initialize Google GenAI official SDK client wrapper
+        client = genai.Client(api_key=api_key)
+        
+        # Initialize In-Memory isolated Vector Storage driver to bypass Windows file locks
+        qdrant_client = QdrantClient(location=":memory:")
+        
+        if not qdrant_client.collection_exists(collection_name=COLLECTION_NAME):
+            qdrant_client.create_collection(
+                collection_name=COLLECTION_NAME,
+                vectors_config=VectorParams(size=384, distance=Distance.COSINE),
+            )
+        print("🚀 Infrastructure Startup Verification Complete. Systems Operational.")
+        
+        # Kick off background compilation immediately to prevent blocking port binding sequences
+        threading.Thread(target=bootstrap_models, daemon=True).start()
+        
+    except Exception as init_err:
+        print(f"❌ INFRASTRUCTURE BOOT ERROR: {str(init_err)}")
+        traceback.print_exc()
+        
+    yield
+    
+    if qdrant_client:
+        qdrant_client.close()
+
+app = FastAPI(title="Multi-Document Intelligence Pipeline", lifespan=lifespan)
+
+# Allow cross-talk communication headers
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"], 
@@ -22,72 +89,155 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Initialize Developer APIs & Reranker
-client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
-ranker = Ranker(model_name="ms-marco-MiniLM-L-12-v2")  # <-- Changed to 12-layer version
-
-# In-memory store to hold document chunks for this session
-DOCUMENT_CHUNKS = []
-
 class ChatRequest(BaseModel):
     message: str
+    document_id: str
 
 @app.post("/upload")
 async def upload_document(file: UploadFile = File(...)):
-    """Handles PDF ingestion, structured Markdown layout extraction, and chunking."""
+    """Handles PDF ingestion, structural text parsing, chunk embedding, and storage maps."""
     if not file.filename.endswith('.pdf'):
         raise HTTPException(status_code=400, detail="Only PDF files are supported.")
     
-    # Ensure BOTH absolute and relative directories exist to prevent path errors
+    if not models_loaded or embedding_model is None:
+        raise HTTPException(status_code=503, detail="Local transformers warming up. Try again in 10 seconds.")
+
     os.makedirs("data", exist_ok=True)
-    os.makedirs("../data", exist_ok=True)
-    
     temp_path = os.path.abspath(f"data/{file.filename}")
     with open(temp_path, "wb") as buffer:
         shutil.copyfileobj(file.file, buffer)
         
-    # Check for keys early so we don't hit an abstract error object
     if not os.getenv("LLAMA_CLOUD_API_KEY"):
-        raise HTTPException(status_code=500, detail="LLAMA_CLOUD_API_KEY is missing from your .env file.")
+        raise HTTPException(status_code=500, detail="LLAMA_CLOUD_API_KEY is missing from your environment.")
         
     try:
-        # Advanced layout-aware parsing using LlamaParse
         parser = LlamaParse(result_type="markdown")
         parsed_docs = parser.load_data(temp_path)
         
-        global DOCUMENT_CHUNKS
-        DOCUMENT_CHUNKS = [] # Clear old chunks
-        
-        raw_text = parsed_docs.text
+        raw_text = "\n\n".join([doc.text for doc in parsed_docs])
         paragraphs = raw_text.split("\n\n")
         
+        doc_id = str(uuid.uuid4())
+        points = []
+        
         for idx, para in enumerate(paragraphs):
-            if len(para.strip()) > 50: 
-                DOCUMENT_CHUNKS.append({"id": idx, "text": para.strip()})
+            clean_para = para.strip()
+            if len(clean_para) > 50: 
+                vector = embedding_model.encode(clean_para).tolist()
+                points.append(
+                    PointStruct(
+                        id=str(uuid.uuid4()),
+                        vector=vector,
+                        payload={
+                            "text": clean_para, 
+                            "filename": file.filename,
+                            "document_id": doc_id
+                        }
+                    )
+                )
+        
+        if points:
+            qdrant_client.upsert(collection_name=COLLECTION_NAME, points=points)
                 
-        return {"status": "Success", "extracted_chunks": len(DOCUMENT_CHUNKS), "filename": file.filename}
-    
+        return {
+            "status": "Success", 
+            "document_id": doc_id,
+            "filename": file.filename,
+            "extracted_chunks": len(points)
+        }
     except Exception as e:
-        # Print the exact failure reason directly to your terminal logs
-        print(f"--- PARSING CRITICAL ERROR: {str(e)} ---")
-        raise HTTPException(status_code=500, detail=f"Parsing Failed: {str(e)}")
+        print(f"❌ PARSING ERROR EXCEPTION: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/documents")
+async def get_uploaded_documents():
+    """Scans structural metadata maps to return a library catalog list."""
+    try:
+        if not qdrant_client:
+            return []
+        scroll_results = qdrant_client.scroll(
+            collection_name=COLLECTION_NAME,
+            limit=100,
+            with_payload=True,
+            with_vectors=False
+        )[0]
+        
+        seen_docs = {}
+        for point in scroll_results:
+            p_load = point.payload
+            if p_load and "document_id" in p_load and p_load["document_id"] not in seen_docs:
+                seen_docs[p_load["document_id"]] = p_load["filename"]
+                
+        return [{"document_id": d_id, "filename": name} for d_id, name in seen_docs.items()]
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/chat")
 async def chat_pipeline(request: ChatRequest):
-    """Executes a two-stage high-precision Reranking flow followed by generation."""
-    if not DOCUMENT_CHUNKS:
-        raise HTTPException(status_code=400, detail="No document processed yet. Please upload a file first.")
-    
+    """Queries structural context matrices, executes cross-encoder reranking, and streams answers."""
     try:
-        # Cross-Encoder Reranking over our layout chunks
-        rerank_req = RerankRequest(query=request.message, passages=DOCUMENT_CHUNKS)
+        if not qdrant_client:
+            raise HTTPException(status_code=500, detail="Core vector store uninitialized.")
+            
+        if not models_loaded or embedding_model is None or ranker is None:
+            raise HTTPException(status_code=503, detail="Local neural engines are wrapping up compilation. Try again in a moment.")
+
+        query_vector = embedding_model.encode(request.message).tolist()
+        
+        doc_filter = Filter(
+            must=[
+                FieldCondition(
+                    key="document_id",
+                    match=MatchValue(value=request.document_id)
+                )
+            ]
+        )
+        
+        response_data = qdrant_client.query_points(
+            collection_name=COLLECTION_NAME,
+            query=query_vector,
+            query_filter=doc_filter,
+            limit=15
+        )
+        
+        # Hardened parsing interface processing layout points safely across variant SDK distributions
+        search_results = []
+        if hasattr(response_data, "points"):
+            search_results = response_data.points
+        elif isinstance(response_data, dict) and "points" in response_data:
+            search_results = response_data["points"]
+        elif isinstance(response_data, list):
+            search_results = response_data
+        else:
+            search_results = getattr(response_data, "scored_points", [])
+
+        if not search_results:
+            raise HTTPException(status_code=400, detail="Target document context empty or unreachable.")
+        
+        retrieved_passages = []
+        for idx, hit in enumerate(search_results):
+            payload = getattr(hit, "payload", None) if not isinstance(hit, dict) else hit.get("payload")
+            if payload and "text" in payload:
+                retrieved_passages.append({"id": idx, "text": payload["text"]})
+        
+        if not retrieved_passages:
+            raise HTTPException(status_code=400, detail="No readable content found within matching structures.")
+
+        # Compute neural relevance via FlashRank Cross-Encoder
+        rerank_req = RerankRequest(query=request.message, passages=retrieved_passages)
         reranked_results = ranker.rerank(rerank_req)
         
-        # Select the top 4 highly relevant context pieces
-        top_contexts = [item['text'] for item in reranked_results[:4]]
-        context_str = "\n---\n".join(top_contexts)
+        top_contexts = []
+        for item in reranked_results[:4]:
+            if isinstance(item, dict):
+                text_content = item.get('text') or item.get('body')
+            else:
+                text_content = getattr(item, 'text', None) or getattr(item, 'body', None)
+            if text_content:
+                top_contexts.append(text_content)
+
+        context_str = "\n---\n".join(top_contexts) if top_contexts else "No context available."
         
-        # Grounding instruction for the LLM
         system_instruction = (
             "You are an advanced document intelligence system. Answer the user prompt based "
             "ONLY on the context provided below. If the answer cannot be found in the context, "
@@ -95,17 +245,30 @@ async def chat_pipeline(request: ChatRequest):
             f"CONTEXT:\n{context_str}"
         )
         
-        # Stream responses live using the new google-genai SDK
+        if not client:
+            raise HTTPException(status_code=500, detail="Gemini SDK wrapper client is unavailable.")
+
+        # Match streaming generator structure to target FastAPI responses
         def response_generator():
-            response_stream = client.models.generate_content_stream(
-                model='gemini-2.5-flash',
-                contents=request.message,
-                config={'system_instruction': system_instruction}
-            )
-            for chunk in response_stream:
-                yield chunk.text
+            try:
+                response_stream = client.models.generate_content_stream(
+                    model='gemini-2.5-flash',
+                    contents=request.message,
+                    config={'system_instruction': system_instruction}
+                )
+                for chunk in response_stream:
+                    if chunk.text is not None:
+                        yield chunk.text
+            except Exception as stream_err:
+                print(f"❌ GENERATOR STREAM EXCEPTION: {str(stream_err)}")
+                yield f"\n[Streaming error: {str(stream_err)}]"
 
         return StreamingResponse(response_generator(), media_type="text/plain")
 
+    except HTTPException as he:
+        print(f"⚠️ HTTP PIPELINE BUBBLE: {he.detail}")
+        raise he
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Generation failed: {str(e)}")
+        print(f"❌ REASON FOR GENERATION 500 CRASH: {str(e)}")
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"Internal Execution Failure: {str(e)}")
