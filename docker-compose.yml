@@ -1,0 +1,20 @@
+services:
+  backend:
+    build:
+      context: ./document-intelligence-pipeline/backend
+      dockerfile: Dockerfile
+    ports:
+      - "8000:8000"
+    environment:
+      - GEMINI_API_KEY=${GEMINI_API_KEY}
+    volumes:
+      - ./document-intelligence-pipeline/backend/qdrant_storage:/app/qdrant_storage
+
+  frontend:
+    build:
+      context: ./document-intelligence-pipeline/rag-ui
+      dockerfile: Dockerfile
+    ports:
+      - "3000:3000"
+    depends_on:
+      - backend

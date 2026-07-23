@@ -1,0 +1,29 @@
+# Python / Virtual Environment
+.venv/
+venv/
+__pycache__/
+*.pyc
+
+# Node / Next.js
+node_modules/
+.next/
+build/
+dist/
+
+# Environment Variables & Keys
+.env
+.env.local
+.env.*.local
+
+# Operating System Files
+.DS_Store
+Thumbs.db
+# Vector DB & Storage
+**/chroma_db/
+**/qdrant_storage/
+*.sqlite
+*.sqlite3
+*.bin
+
+# Uploaded Sample PDFs / Data
+**/backend/data/

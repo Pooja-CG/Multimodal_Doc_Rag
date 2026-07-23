@@ -27,7 +27,8 @@ export default function Home() {
   const fetchDocumentsList = async () => {
     try {
       // 🛠️ HARDCODED FIXED IP: Forces absolute routing via system loopback, skipping DNS interpretation crashes
-      const res = await fetch('http://127.0.0.1:8000/documents');
+     // Replace 'backend' with your actual service name from docker-compose.yml
+const res = await fetch('http://backend:8000/documents');
       if (res.ok) {
         const data = await res.json();
         setDocuments(data);
@@ -52,7 +53,8 @@ export default function Home() {
     formData.append('file', file);
 
     try {
-      const res = await fetch('http://127.0.0.1:8000/upload', {
+      // Replace 'backend' with your actual service name from docker-compose.yml
+      const res = await fetch('http://backend:8000/upload', {
         method: 'POST',
         body: formData,
       });

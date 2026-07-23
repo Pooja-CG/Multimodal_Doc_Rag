@@ -1,0 +1,19 @@
+# --- Framework & Server ---
+fastapi
+uvicorn[standard]
+pydantic
+
+# --- Vector Database & RAG ---
+qdrant-client
+langchain
+langchain-community
+
+# --- AI & Vision Models ---
+transformers
+sentence-transformers
+pillow
+
+# --- Utilities ---
+python-dotenv
+requests
+aiofiles
