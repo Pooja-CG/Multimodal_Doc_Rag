@@ -12,10 +12,8 @@ chromadb
 langchain
 langchain-community
 
-# --- AI, Vision & SDKs ---
+# --- AI & SDKs ---
 google-genai
-transformers
-sentence-transformers
 pillow
 
 # --- Utilities ---

@@ -68,14 +68,15 @@ async def lifespan(app: FastAPI):
         qdrant_client.close()
 
 
+# Initialize FastAPI app with lifespan handler
 app = FastAPI(title="Multi-Document Intelligence Pipeline", lifespan=lifespan)
 
-# Allow cross-talk communication headers
+# Add CORS middleware to allow cross-origin requests from Vercel/local frontends
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"], 
+    allow_origins=["*"],  # Allows all origins (or specify your Vercel URL)
     allow_credentials=True,
-    allow_methods=["*"],
+    allow_methods=["*"],  # Allows GET, POST, OPTIONS, etc.
     allow_headers=["*"],
 )
 
