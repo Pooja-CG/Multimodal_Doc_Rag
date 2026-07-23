@@ -8,6 +8,9 @@ interface DocumentIndex {
   filename: string;
 }
 
+// Set base API URL using environment variable with fallback to live Render backend over HTTPS
+const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || 'https://multimodal-doc-rag.onrender.com';
+
 export default function Home() {
   const [documents, setDocuments] = useState<DocumentIndex[]>([]);
   const [selectedDocId, setSelectedDocId] = useState<string>('');
@@ -26,9 +29,7 @@ export default function Home() {
 
   const fetchDocumentsList = async () => {
     try {
-      // 🛠️ HARDCODED FIXED IP: Forces absolute routing via system loopback, skipping DNS interpretation crashes
-     // Replace 'backend' with your actual service name from docker-compose.yml
-const res = await fetch('http://backend:8000/documents');
+      const res = await fetch(`${API_BASE_URL}/documents`);
       if (res.ok) {
         const data = await res.json();
         setDocuments(data);
@@ -53,8 +54,7 @@ const res = await fetch('http://backend:8000/documents');
     formData.append('file', file);
 
     try {
-      // Replace 'backend' with your actual service name from docker-compose.yml
-      const res = await fetch('http://backend:8000/upload', {
+      const res = await fetch(`${API_BASE_URL}/upload`, {
         method: 'POST',
         body: formData,
       });
@@ -73,7 +73,7 @@ const res = await fetch('http://backend:8000/documents');
     } catch (err: any) {
       setUploadStatus('');
       setErrorMessage(err.message || 'File upload failed.');
-    } finally {
+    } fontally {
       setIsUploading(false);
     }
   };
@@ -91,7 +91,7 @@ const res = await fetch('http://backend:8000/documents');
     setConversation((prev) => [...prev, { role: 'assistant', text: '' }]);
 
     try {
-      const res = await fetch('http://127.0.0.1:8000/chat', {
+      const res = await fetch(`${API_BASE_URL}/chat`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -124,7 +124,7 @@ const res = await fetch('http://backend:8000/documents');
     } catch (err: any) {
       setErrorMessage('Error: Failed to collect connection streams.');
       setConversation((prev) => prev.filter((msg, idx) => !(idx === prev.length - 1 && msg.text === '')));
-    } finally {
+    } fontally {
       setIsGenerating(false);
     }
   };
