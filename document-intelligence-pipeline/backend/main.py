@@ -11,7 +11,7 @@ from dotenv import load_dotenv
 from llama_parse import LlamaParse
 from flashrank import Ranker, RerankRequest
 from google import genai
-
+from concurrent.futures import ThreadPoolExecutor
 from qdrant_client import QdrantClient
 from qdrant_client.models import Distance, VectorParams, PointStruct, Filter, FieldCondition, MatchValue
 
@@ -23,16 +23,18 @@ qdrant_client = None
 ranker = None
 COLLECTION_NAME = "multidoc_chunks"
 
-
-def get_gemini_embedding(text: str) -> list[float]:
-    """Generates 768-dimensional vector embedding for a single string (used by chat query)."""
+def get_gemini_embeddings_batch(texts: list[str]) -> list[list[float]]:
+    """Generates 768-dimensional vector embeddings concurrently using single-item API requests."""
     if not client:
         raise RuntimeError("Gemini client is not initialized.")
-    response = client.models.embed_content(
-        model="text-embedding-004",
-        contents=text,
-    )
-    return response.embedding.values
+    if not texts:
+        return []
+    
+    # Use thread pool to send single-item requests concurrently (up to 10 at a time)
+    with ThreadPoolExecutor(max_workers=10) as executor:
+        results = list(executor.map(get_gemini_embedding, texts))
+        
+    return results
 
 
 def get_gemini_embeddings_batch(texts: list[str]) -> list[list[float]]:
