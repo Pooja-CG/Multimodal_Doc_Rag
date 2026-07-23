@@ -7,10 +7,12 @@ flashrank
 
 # --- Vector Database & RAG ---
 qdrant-client
+chromadb
 langchain
 langchain-community
 
-# --- AI & Vision Models ---
+# --- AI, Vision & SDKs ---
+google-genai
 transformers
 sentence-transformers
 pillow
