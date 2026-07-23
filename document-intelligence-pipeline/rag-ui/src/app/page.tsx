@@ -73,7 +73,7 @@ export default function Home() {
     } catch (err: any) {
       setUploadStatus('');
       setErrorMessage(err.message || 'File upload failed.');
-    } fontally {
+    } finally {
       setIsUploading(false);
     }
   };
@@ -124,7 +124,7 @@ export default function Home() {
     } catch (err: any) {
       setErrorMessage('Error: Failed to collect connection streams.');
       setConversation((prev) => prev.filter((msg, idx) => !(idx === prev.length - 1 && msg.text === '')));
-    } fontally {
+    } finally {
       setIsGenerating(false);
     }
   };
