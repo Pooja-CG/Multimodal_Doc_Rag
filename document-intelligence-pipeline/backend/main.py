@@ -25,7 +25,7 @@ COLLECTION_NAME = "multidoc_chunks"
 
 
 def get_gemini_embedding(text: str) -> list[float]:
-    """Generates 768-dimensional vector embeddings using Gemini API (0 MB local RAM footprint)."""
+    """Generates 768-dimensional vector embedding for a single string (used by chat query)."""
     if not client:
         raise RuntimeError("Gemini client is not initialized.")
     response = client.models.embed_content(
@@ -33,6 +33,20 @@ def get_gemini_embedding(text: str) -> list[float]:
         contents=text,
     )
     return response.embedding.values
+
+
+def get_gemini_embeddings_batch(texts: list[str]) -> list[list[float]]:
+    """Generates 768-dimensional vector embeddings in batched network calls for fast document ingestion."""
+    if not client:
+        raise RuntimeError("Gemini client is not initialized.")
+    if not texts:
+        return []
+    
+    response = client.models.embed_content(
+        model="text-embedding-004",
+        contents=texts,
+    )
+    return [e.values for e in response.embeddings]
 
 
 @asynccontextmanager
@@ -107,19 +121,30 @@ async def upload_document(file: UploadFile = File(...)):
         raw_text = "\n\n".join([doc.text for doc in parsed_docs])
         paragraphs = raw_text.split("\n\n")
         
+        # Clean & filter meaningful paragraphs (> 50 chars)
+        clean_paras = [p.strip() for p in paragraphs if len(p.strip()) > 50]
+        
         doc_id = str(uuid.uuid4())
         points = []
         
-        for idx, para in enumerate(paragraphs):
-            clean_para = para.strip()
-            if len(clean_para) > 50: 
-                vector = get_gemini_embedding(clean_para)
+        if clean_paras:
+            # FAST BATCH EMBEDDING: Process in batches of 20 paragraphs at once
+            batch_size = 20
+            all_vectors = []
+            
+            for i in range(0, len(clean_paras), batch_size):
+                batch_text = clean_paras[i:i + batch_size]
+                batch_vectors = get_gemini_embeddings_batch(batch_text)
+                all_vectors.extend(batch_vectors)
+
+            # Build Qdrant structs quickly
+            for para, vector in zip(clean_paras, all_vectors):
                 points.append(
                     PointStruct(
                         id=str(uuid.uuid4()),
                         vector=vector,
                         payload={
-                            "text": clean_para, 
+                            "text": para, 
                             "filename": file.filename,
                             "document_id": doc_id
                         }
