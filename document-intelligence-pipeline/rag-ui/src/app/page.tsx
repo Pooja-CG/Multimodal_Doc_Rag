@@ -9,7 +9,7 @@ interface DocumentIndex {
 }
 
 // Set base API URL using environment variable with fallback to live Render backend over HTTPS
-const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || 'https://multimodal-doc-rag.onrender.com';
+const API_BASE_URL = 'https://multimodal-doc-rag.onrender.com';
 
 export default function Home() {
   const [documents, setDocuments] = useState<DocumentIndex[]>([]);
