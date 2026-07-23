@@ -3,6 +3,7 @@ fastapi
 uvicorn[standard]
 pydantic
 llama-parse
+flashrank
 
 # --- Vector Database & RAG ---
 qdrant-client
