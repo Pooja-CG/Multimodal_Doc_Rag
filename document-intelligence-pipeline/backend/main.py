@@ -2,7 +2,6 @@ import os
 import shutil
 import uuid
 import traceback
-import threading
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, UploadFile, File, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -15,34 +14,26 @@ from google import genai
 
 from qdrant_client import QdrantClient
 from qdrant_client.models import Distance, VectorParams, PointStruct, Filter, FieldCondition, MatchValue
-from sentence_transformers import SentenceTransformer
 
 load_dotenv()
 
 # Setup global structural variables
 client = None
 qdrant_client = None
-embedding_model = None
 ranker = None
 COLLECTION_NAME = "multidoc_chunks"
 
-# Core atomic flag tracking thread compilation loops
-models_loaded = False
 
-def bootstrap_models():
-    """Warms up and caches embedding and reranker structures on a isolated background thread."""
-    global embedding_model, ranker, models_loaded
-    try:
-        print("⏳ [Background Worker] Compiling local SentenceTransformer ('all-MiniLM-L6-v2')...")
-        embedding_model = SentenceTransformer("all-MiniLM-L6-v2")
-        
-        print("⏳ [Background Worker] Caching local FlashRank Cross-Encoder ('ms-marco-MiniLM-L-12-v2')...")
-        ranker = Ranker(model_name="ms-marco-MiniLM-L-12-v2")
-        
-        models_loaded = True
-        print("🚀 [Background Worker] Matrix compilation complete. Local neural models active.")
-    except Exception as e:
-        print(f"❌ [Background Worker] Critical compilation error: {str(e)}")
+def get_gemini_embedding(text: str) -> list[float]:
+    """Generates 768-dimensional vector embeddings using Gemini API (0 MB local RAM footprint)."""
+    if not client:
+        raise RuntimeError("Gemini client is not initialized.")
+    response = client.models.embed_content(
+        model="text-embedding-004",
+        contents=text,
+    )
+    return response.embedding.values
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -56,18 +47,16 @@ async def lifespan(app: FastAPI):
         # Initialize Google GenAI official SDK client wrapper
         client = genai.Client(api_key=api_key)
         
-        # Initialize In-Memory isolated Vector Storage driver to bypass Windows file locks
+        # Initialize In-Memory isolated Vector Storage driver
         qdrant_client = QdrantClient(location=":memory:")
         
+        # text-embedding-004 produces 768-dimensional vectors
         if not qdrant_client.collection_exists(collection_name=COLLECTION_NAME):
             qdrant_client.create_collection(
                 collection_name=COLLECTION_NAME,
-                vectors_config=VectorParams(size=384, distance=Distance.COSINE),
+                vectors_config=VectorParams(size=768, distance=Distance.COSINE),
             )
         print("🚀 Infrastructure Startup Verification Complete. Systems Operational.")
-        
-        # Kick off background compilation immediately to prevent blocking port binding sequences
-        threading.Thread(target=bootstrap_models, daemon=True).start()
         
     except Exception as init_err:
         print(f"❌ INFRASTRUCTURE BOOT ERROR: {str(init_err)}")
@@ -77,6 +66,7 @@ async def lifespan(app: FastAPI):
     
     if qdrant_client:
         qdrant_client.close()
+
 
 app = FastAPI(title="Multi-Document Intelligence Pipeline", lifespan=lifespan)
 
@@ -89,18 +79,17 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+
 class ChatRequest(BaseModel):
     message: str
     document_id: str
+
 
 @app.post("/upload")
 async def upload_document(file: UploadFile = File(...)):
     """Handles PDF ingestion, structural text parsing, chunk embedding, and storage maps."""
     if not file.filename.endswith('.pdf'):
         raise HTTPException(status_code=400, detail="Only PDF files are supported.")
-    
-    if not models_loaded or embedding_model is None:
-        raise HTTPException(status_code=503, detail="Local transformers warming up. Try again in 10 seconds.")
 
     os.makedirs("data", exist_ok=True)
     temp_path = os.path.abspath(f"data/{file.filename}")
@@ -123,7 +112,7 @@ async def upload_document(file: UploadFile = File(...)):
         for idx, para in enumerate(paragraphs):
             clean_para = para.strip()
             if len(clean_para) > 50: 
-                vector = embedding_model.encode(clean_para).tolist()
+                vector = get_gemini_embedding(clean_para)
                 points.append(
                     PointStruct(
                         id=str(uuid.uuid4()),
@@ -149,6 +138,7 @@ async def upload_document(file: UploadFile = File(...)):
         print(f"❌ PARSING ERROR EXCEPTION: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
+
 @app.get("/documents")
 async def get_uploaded_documents():
     """Scans structural metadata maps to return a library catalog list."""
@@ -172,17 +162,16 @@ async def get_uploaded_documents():
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+
 @app.post("/chat")
 async def chat_pipeline(request: ChatRequest):
     """Queries structural context matrices, executes cross-encoder reranking, and streams answers."""
+    global ranker
     try:
         if not qdrant_client:
             raise HTTPException(status_code=500, detail="Core vector store uninitialized.")
-            
-        if not models_loaded or embedding_model is None or ranker is None:
-            raise HTTPException(status_code=503, detail="Local neural engines are wrapping up compilation. Try again in a moment.")
 
-        query_vector = embedding_model.encode(request.message).tolist()
+        query_vector = get_gemini_embedding(request.message)
         
         doc_filter = Filter(
             must=[
@@ -200,7 +189,6 @@ async def chat_pipeline(request: ChatRequest):
             limit=15
         )
         
-        # Hardened parsing interface processing layout points safely across variant SDK distributions
         search_results = []
         if hasattr(response_data, "points"):
             search_results = response_data.points
@@ -222,6 +210,10 @@ async def chat_pipeline(request: ChatRequest):
         
         if not retrieved_passages:
             raise HTTPException(status_code=400, detail="No readable content found within matching structures.")
+
+        # Lazy load FlashRank reranker
+        if ranker is None:
+            ranker = Ranker(model_name="ms-marco-MiniLM-L-12-v2")
 
         # Compute neural relevance via FlashRank Cross-Encoder
         rerank_req = RerankRequest(query=request.message, passages=retrieved_passages)
@@ -248,7 +240,6 @@ async def chat_pipeline(request: ChatRequest):
         if not client:
             raise HTTPException(status_code=500, detail="Gemini SDK wrapper client is unavailable.")
 
-        # Match streaming generator structure to target FastAPI responses
         def response_generator():
             try:
                 response_stream = client.models.generate_content_stream(
